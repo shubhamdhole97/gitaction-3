@@ -1,5 +1,5 @@
 ---
-- name: Strict per-user SSH access per port
+- name: Enforce strict per-user SSH access per port
   hosts: all
   become: true
   vars:
@@ -11,15 +11,21 @@
 
   tasks:
 
-    - name: Create users
+    - name: Stop default SSH on port 22
+      systemd:
+        name: ssh
+        enabled: no
+        state: stopped
+
+    - name: Create user accounts
       user:
         name: "{{ item.name }}"
-        state: present
         shell: /bin/bash
         create_home: yes
+        state: present
       loop: "{{ user_ports }}"
 
-    - name: Create .ssh directory
+    - name: Ensure .ssh directory exists
       file:
         path: "/home/{{ item.name }}/.ssh"
         state: directory
@@ -28,7 +34,7 @@
         group: "{{ item.name }}"
       loop: "{{ user_ports }}"
 
-    - name: Add public key to authorized_keys
+    - name: Add shared public key
       copy:
         src: keys/shared.pub
         dest: "/home/{{ item.name }}/.ssh/authorized_keys"
@@ -38,43 +44,30 @@
         remote_src: no
       loop: "{{ user_ports }}"
 
-    - name: Copy base sshd_config for each user port
-      copy:
-        src: /etc/ssh/sshd_config
-        dest: "/etc/ssh/sshd_config_{{ item.port }}"
-        remote_src: yes
-      loop: "{{ user_ports }}"
-
-    - name: Set custom Port in sshd_config
-      lineinfile:
+    - name: Create custom sshd_config for each user/port
+      blockinfile:
         path: "/etc/ssh/sshd_config_{{ item.port }}"
-        regexp: '^Port '
-        line: "Port {{ item.port }}"
+        create: yes
+        block: |
+          Port {{ item.port }}
+          ListenAddress 0.0.0.0
+          Protocol 2
+          PermitRootLogin no
+          PasswordAuthentication no
+          AllowUsers {{ item.name }}
+          AuthorizedKeysFile .ssh/authorized_keys
+          ChallengeResponseAuthentication no
+          UsePAM yes
+          X11Forwarding no
+          PrintMotd no
+          ClientAliveInterval 300
+          ClientAliveCountMax 2
+          Subsystem sftp /usr/lib/openssh/sftp-server
       loop: "{{ user_ports }}"
 
-    - name: Restrict login to single user per port
-      lineinfile:
-        path: "/etc/ssh/sshd_config_{{ item.port }}"
-        regexp: '^AllowUsers '
-        line: "AllowUsers {{ item.name }}"
-        insertafter: EOF
-      loop: "{{ user_ports }}"
-
-    - name: Disable root login
-      lineinfile:
-        path: "/etc/ssh/sshd_config_{{ item.port }}"
-        regexp: '^PermitRootLogin '
-        line: "PermitRootLogin no"
-      loop: "{{ user_ports }}"
-
-    - name: Disable password authentication
-      lineinfile:
-        path: "/etc/ssh/sshd_config_{{ item.port }}"
-        regexp: '^PasswordAuthentication '
-        line: "PasswordAuthentication no"
-      loop: "{{ user_ports }}"
-
-    - name: Start sshd for each custom port
+    - name: Start sshd on each port with custom config
       shell: |
         /usr/sbin/sshd -f /etc/ssh/sshd_config_{{ item.port }}
+      args:
+        executable: /bin/bash
       loop: "{{ user_ports }}"
