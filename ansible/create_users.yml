@@ -1,5 +1,5 @@
 ---
-- name: Enforce strict per-user SSH access per port
+- name: Strict per-user SSH access per port
   hosts: all
   become: true
   vars:
@@ -10,21 +10,16 @@
       - { name: "shubham", port: 2224 }
 
   tasks:
-    - name: Stop default SSH on port 22
-      systemd:
-        name: ssh
-        enabled: no
-        state: stopped
 
     - name: Create users
       user:
         name: "{{ item.name }}"
+        state: present
         shell: /bin/bash
         create_home: yes
-        state: present
       loop: "{{ user_ports }}"
 
-    - name: Ensure .ssh directory exists
+    - name: Create .ssh directory
       file:
         path: "/home/{{ item.name }}/.ssh"
         state: directory
@@ -43,30 +38,43 @@
         remote_src: no
       loop: "{{ user_ports }}"
 
-    - name: Create sshd_config for each port
-      blockinfile:
-        path: "/etc/ssh/sshd_config_{{ item.port }}"
-        create: yes
-        block: |
-          Port {{ item.port }}
-          ListenAddress 0.0.0.0
-          Protocol 2
-          PermitRootLogin no
-          PasswordAuthentication no
-          AllowUsers {{ item.name }}
-          AuthorizedKeysFile .ssh/authorized_keys
-          ChallengeResponseAuthentication no
-          UsePAM yes
-          X11Forwarding no
-          PrintMotd no
-          ClientAliveInterval 300
-          ClientAliveCountMax 2
-          Subsystem sftp /usr/lib/openssh/sftp-server
+    - name: Copy base sshd_config for each user port
+      copy:
+        src: /etc/ssh/sshd_config
+        dest: "/etc/ssh/sshd_config_{{ item.port }}"
+        remote_src: yes
       loop: "{{ user_ports }}"
 
-    - name: Start sshd process for each user/port
+    - name: Set custom Port in sshd_config
+      lineinfile:
+        path: "/etc/ssh/sshd_config_{{ item.port }}"
+        regexp: '^Port '
+        line: "Port {{ item.port }}"
+      loop: "{{ user_ports }}"
+
+    - name: Restrict login to single user per port
+      lineinfile:
+        path: "/etc/ssh/sshd_config_{{ item.port }}"
+        regexp: '^AllowUsers '
+        line: "AllowUsers {{ item.name }}"
+        insertafter: EOF
+      loop: "{{ user_ports }}"
+
+    - name: Disable root login
+      lineinfile:
+        path: "/etc/ssh/sshd_config_{{ item.port }}"
+        regexp: '^PermitRootLogin '
+        line: "PermitRootLogin no"
+      loop: "{{ user_ports }}"
+
+    - name: Disable password authentication
+      lineinfile:
+        path: "/etc/ssh/sshd_config_{{ item.port }}"
+        regexp: '^PasswordAuthentication '
+        line: "PasswordAuthentication no"
+      loop: "{{ user_ports }}"
+
+    - name: Start sshd for each custom port
       shell: |
         /usr/sbin/sshd -f /etc/ssh/sshd_config_{{ item.port }}
-      args:
-        executable: /bin/bash
       loop: "{{ user_ports }}"
