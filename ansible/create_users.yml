@@ -1,90 +1,38 @@
 ---
-# ✅ FINAL FIXED Ansible Playbook: create_users.yml
-# Enforces strict per-port SSH login and disables default ssh
-
-- name: Setup user-port restricted SSH access
+- name: Create users on GCP VM
   hosts: all
   become: true
-
   vars:
-    users_and_ports:
-      - { name: user1, port: 2221 }
-      - { name: user2, port: 2222 }
-      - { name: user3, port: 2223 }
-      - { name: shubham, port: 2224 }
+    users_to_create:
+      - alice
+      - bob
+      - charlie
+      - shubham
 
   tasks:
-    - name: Create users
+    - name: Ensure users exist
       user:
-        name: "{{ item.name }}"
+        name: "{{ item }}"
+        state: present
         shell: /bin/bash
         create_home: yes
-      loop: "{{ users_and_ports }}"
+      loop: "{{ users_to_create }}"
 
     - name: Ensure .ssh directory exists
       file:
-        path: "/home/{{ item.name }}/.ssh"
+        path: "/home/{{ item }}/.ssh"
         state: directory
-        owner: "{{ item.name }}"
-        group: "{{ item.name }}"
-        mode: '0700'
-      loop: "{{ users_and_ports }}"
+        mode: 0700
+        owner: "{{ item }}"
+        group: "{{ item }}"
+      loop: "{{ users_to_create }}"
 
     - name: Add shared public key to authorized_keys
       copy:
-        src: keys/shared.pub
-        dest: "/home/{{ item.name }}/.ssh/authorized_keys"
-        owner: "{{ item.name }}"
-        group: "{{ item.name }}"
-        mode: '0600'
-      loop: "{{ users_and_ports }}"
-
-    - name: Disable and stop default SSH service (port 22)
-      systemd:
-        name: ssh
-        enabled: false
-        state: stopped
-
-    - name: Create sshd_config for each user/port
-      copy:
-        dest: "/etc/ssh/sshd_config_{{ item.port }}"
-        content: |
-          Port {{ item.port }}
-          Protocol 2
-          PermitRootLogin no
-          AllowUsers {{ item.name }}
-          PasswordAuthentication no
-          PubkeyAuthentication yes
-          AuthorizedKeysFile .ssh/authorized_keys
-          ChallengeResponseAuthentication no
-          UsePAM yes
-          AllowAgentForwarding yes
-          AllowTcpForwarding yes
-          X11Forwarding no
-          Subsystem sftp /usr/lib/openssh/sftp-server
-      loop: "{{ users_and_ports }}"
-
-    - name: Create systemd sshd@.service template for per-port sshd
-      copy:
-        dest: /etc/systemd/system/sshd@.service
-        content: |
-          [Unit]
-          Description=Per-port OpenSSH server for %%i
-          After=network.target
-
-          [Service]
-          ExecStart=/usr/sbin/sshd -D -f /etc/ssh/sshd_config_%%i
-          Restart=on-failure
-
-          [Install]
-          WantedBy=multi-user.target
-
-    - name: Reload systemd after new sshd@.service added
-      command: systemctl daemon-reload
-
-    - name: Start per-port sshd instances for each user
-      systemd:
-        name: sshd@{{ item.port }}
-        enabled: true
-        state: started
-      loop: "{{ users_and_ports }}"
+        src: keys/shared.pub        # Relative to playbook or working dir
+        dest: "/home/{{ item }}/.ssh/authorized_keys"
+        owner: "{{ item }}"
+        group: "{{ item }}"
+        mode: 0600
+        remote_src: no              # <--- THIS IS CRUCIAL!
+      loop: "{{ users_to_create }}"
