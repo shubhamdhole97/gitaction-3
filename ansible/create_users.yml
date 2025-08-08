@@ -9,25 +9,35 @@
       - { name: "bob",     port: 2222 }
       - { name: "charlie", port: 2223 }
       - { name: "shubham", port: 2224 }
+
+    # Disable default SSH on 22 after custom instances are up.
     disable_port_22: true
-    shared_pubkey_src: "keys/shared.pub"
+    shared_pubkey_src: "keys/shared.pub"   # on your controller machine
 
   tasks:
     - name: Ensure OpenSSH server is installed
-      apt: { name: openssh-server, state: present, update_cache: yes }
+      apt:
+        name: openssh-server
+        state: present
+        update_cache: yes
 
-    - name: Stop & disable default sshd on 22
-      systemd: { name: ssh, enabled: no, state: stopped }
-      when: disable_port_22
-
-    - name: Ensure /run/sshd exists
-      file: { path: /run/sshd, state: directory, owner: root, group: root, mode: "0755" }
+    - name: Ensure privsep dir exists
+      file:
+        path: /run/sshd
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
 
     - name: Ensure users exist
-      user: { name: "{{ item.name }}", state: present, shell: /bin/bash, create_home: yes }
+      user:
+        name: "{{ item.name }}"
+        state: present
+        shell: /bin/bash
+        create_home: yes
       loop: "{{ user_ports }}"
 
-    - name: Create ~/.ssh
+    - name: Create ~/.ssh for each user
       file:
         path: "/home/{{ item.name }}/.ssh"
         state: directory
@@ -36,7 +46,7 @@
         group: "{{ item.name }}"
       loop: "{{ user_ports }}"
 
-    - name: Install authorized_keys
+    - name: Install shared authorized_keys for each user
       copy:
         src: "{{ shared_pubkey_src }}"
         dest: "/home/{{ item.name }}/.ssh/authorized_keys"
@@ -46,18 +56,23 @@
         remote_src: no
       loop: "{{ user_ports }}"
 
-    - name: Write per-port sshd configs (each allows only its user)
+    - name: Write minimal per-port sshd configs (only allow mapped user)
       copy:
         dest: "/etc/ssh/sshd_config_{{ item.port }}"
         owner: root
         group: root
         mode: "0644"
         content: |
+          # Isolated sshd for port {{ item.port }}
           Port {{ item.port }}
           ListenAddress 0.0.0.0
           Protocol 2
           AddressFamily any
+
+          # Separate PID per instance
           PidFile /run/sshd/sshd-{{ item.port }}.pid
+
+          # Security/auth
           PermitRootLogin no
           PasswordAuthentication no
           PubkeyAuthentication yes
@@ -68,41 +83,67 @@
           PrintMotd no
           ClientAliveInterval 300
           ClientAliveCountMax 2
+
+          # Restrict to single user for this port
           AllowUsers {{ item.name }}
+
+          # Load distro extras last (safe)
           Include /etc/ssh/sshd_config.d/*.conf
       loop: "{{ user_ports }}"
 
-    - name: Systemd template for per-port sshd
+    - name: Install systemd template for per-port sshd
       copy:
         dest: /etc/systemd/system/sshd@.service
+        owner: root
+        group: root
         mode: "0644"
         content: |
           [Unit]
           Description=OpenSSH per-port instance %i
           After=network.target
           Wants=network.target
+
           [Service]
           Type=forking
           PIDFile=/run/sshd/sshd-%i.pid
           ExecStart=/usr/sbin/sshd -f /etc/ssh/sshd_config_%i
           ExecReload=/bin/kill -HUP $MAINPID
           Restart=on-failure
+
           [Install]
           WantedBy=multi-user.target
 
     - name: Reload systemd
-      systemd: { daemon_reload: yes }
+      systemd:
+        daemon_reload: yes
 
-    - name: Enable & start instances
+    - name: Enable & start per-port sshd instances
       systemd:
         name: "sshd@{{ item.port }}"
         state: started
         enabled: yes
       loop: "{{ user_ports }}"
 
-    - name: Show listening ports
+    # Optional: allow ports in UFW if it's installed; ignore errors if not present
+    - name: Allow ports in UFW if available
+      command: "ufw allow {{ item.port }}/tcp"
+      loop: "{{ user_ports }}"
+      register: ufw_result
+      changed_when: "'Skipping' not in ufw_result.stdout"
+      failed_when: false
+
+    - name: Show listening sshd sockets
       command: bash -lc "ss -tulpn | grep -E ':(2221|2222|2223|2224)\\s' || true"
       register: ss_out
-      changed: false
+      changed_when: false
 
-    - debug: { var: ss_out.stdout }
+    - debug:
+        var: ss_out.stdout
+
+    # Disable default ssh only AFTER custom instances are up
+    - name: Stop & disable default sshd on 22 (done last to avoid disconnect)
+      systemd:
+        name: ssh
+        state: stopped
+        enabled: no
+      when: disable_port_22
