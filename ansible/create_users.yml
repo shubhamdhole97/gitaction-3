@@ -1,16 +1,17 @@
 ---
-- name: Minimal per-user per-port sshd (no PIDFile, no forking)
+- name: Lock each user to their SSH port using one sshd
   hosts: all
   become: true
+
   vars:
-    user_ports:
+    ser_ports:
       - { name: "alice",   port: 2221 }
       - { name: "bob",     port: 2222 }
       - { name: "charlie", port: 2223 }
       - { name: "shubham", port: 2224 }
 
   tasks:
-    - name: Ensure OpenSSH is installed and host keys exist
+    - name: Ensure OpenSSH is installed
       apt:
         name: openssh-server
         state: present
@@ -20,43 +21,43 @@
       command: ssh-keygen -A
       changed_when: false
 
-    - name: Ensure priv-sep dir exists
+    - name: Ensure users exist
+      user:
+        name: "{{ item.name }}"
+        state: present
+        shell: /bin/bash
+        create_home: yes
+      loop: "{{ ser_ports }}"
+
+    - name: Prepare ~/.ssh with correct perms
       file:
-        path: /run/sshd
+        path: "/home/{{ item.name }}/.ssh"
         state: directory
+        mode: "0700"
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
+      loop: "{{ ser_ports }}"
+
+    - name: Install shared authorized_keys
+      copy:
+        src: "keys/shared.pub"             # <-- on your controller
+        dest: "/home/{{ item.name }}/.ssh/authorized_keys"
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
+        mode: "0600"
+        remote_src: no
+      loop: "{{ ser_ports }}"
+
+    # Drop a clean include file so we don't fight /etc/ssh/sshd_config
+    - name: Write per-port restrictions as a drop-in file
+      copy:
+        dest: /etc/ssh/sshd_config.d/ports-per-user.conf
         owner: root
         group: root
-        mode: "0755"
-
-    # IMPORTANT: free ports from default sshd so instances can bind
-    - name: Remove custom ports from default sshd_config
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^Port (2221|2222|2223|2224|2225)$'
-        state: absent
-
-    - name: Ensure Port 22 exists in default
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#?\s*Port 22$'
-        line: 'Port 22'
-        state: present
-
-    - name: Restart default sshd
-      systemd:
-        name: ssh
-        state: restarted
-        enabled: yes
-
-    - name: Write minimal per-port configs (no PIDFile)
-      copy:
-        dest: "/etc/ssh/sshd_config_{{ item.port }}"
         mode: "0644"
         content: |
-          Port {{ item.port }}
-          ListenAddress 0.0.0.0
+          # Global hardening
           Protocol 2
-          AddressFamily any
           PermitRootLogin no
           PasswordAuthentication no
           PubkeyAuthentication yes
@@ -65,43 +66,48 @@
           UsePAM yes
           X11Forwarding no
           PrintMotd no
-          ClientAliveInterval 300
-          ClientAliveCountMax 2
-          AllowUsers {{ item.name }}
-          Include /etc/ssh/sshd_config.d/*.conf
-      loop: "{{ user_ports }}"
 
-    - name: Validate configs
-      command: "sshd -t -f /etc/ssh/sshd_config_{{ item.port }}"
-      loop: "{{ user_ports }}"
+          # Listen on the required ports
+          {% for item in ser_ports %}
+          Port {{ item.port }}
+          {% endfor %}
+
+          # Lock each port to its user
+          {% for item in ser_ports %}
+          Match LocalPort {{ item.port }}
+            AllowUsers {{ item.name }}
+          {% endfor %}
+
+    # Make sure default sshd isn't also listening on our custom ports
+    - name: Remove stray custom Port lines from the base config (if any)
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^Port (2221|2222|2223|2224|2225)$'
+        state: absent
+
+    # (Optional) Keep Port 22 available for this run to avoid disconnects.
+    # After you verify, you can disable 22 by commenting it out and reloading.
+    - name: Ensure Port 22 exists in the base config
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?\s*Port 22$'
+        line: 'Port 22'
+        state: present
+
+    - name: Validate final sshd configuration
+      command: sshd -t
       changed_when: false
 
-    - name: Install systemd template (Type=simple, no PIDFile, -D)
-      copy:
-        dest: /etc/systemd/system/sshd@.service
-        mode: "0644"
-        content: |
-          [Unit]
-          Description=OpenSSH per-port instance %i
-          After=network.target
-          Wants=network.target
-
-          [Service]
-          Type=simple
-          ExecStartPre=/usr/sbin/sshd -t -f /etc/ssh/sshd_config_%i
-          ExecStart=/usr/sbin/sshd -D -f /etc/ssh/sshd_config_%i
-          Restart=on-failure
-
-          [Install]
-          WantedBy=multi-user.target
-
-    - name: Reload systemd
+    - name: Reload sshd to apply changes (keeps current session)
       systemd:
-        daemon_reload: yes
-
-    - name: Enable & start per-port instances
-      systemd:
-        name: "sshd@{{ item.port }}"
-        state: started
+        name: ssh
+        state: reloaded
         enabled: yes
-      loop: "{{ user_ports }}"
+
+    - name: Show listening sockets
+      command: bash -lc "ss -tulpn | grep -E ':(2221|2222|2223|2224)\\s' || true"
+      register: ss_out
+      changed_when: false
+
+    - debug:
+        var: ss_out.stdout
