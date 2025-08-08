@@ -1,0 +1,38 @@
+---
+- name: Create users on GCP VM
+  hosts: all
+  become: true
+  vars:
+    users_to_create:
+      - alice
+      - bob
+      - charlie
+      - shubham
+
+  tasks:
+    - name: Ensure users exist
+      user:
+        name: "{{ item }}"
+        state: present
+        shell: /bin/bash
+        create_home: yes
+      loop: "{{ users_to_create }}"
+
+    - name: Ensure .ssh directory exists
+      file:
+        path: "/home/{{ item }}/.ssh"
+        state: directory
+        mode: 0700
+        owner: "{{ item }}"
+        group: "{{ item }}"
+      loop: "{{ users_to_create }}"
+
+    - name: Add shared public key to authorized_keys
+      copy:
+        src: keys/shared.pub        # Relative to playbook or working dir
+        dest: "/home/{{ item }}/.ssh/authorized_keys"
+        owner: "{{ item }}"
+        group: "{{ item }}"
+        mode: 0600
+        remote_src: no              # <--- THIS IS CRUCIAL!
+      loop: "{{ users_to_create }}"

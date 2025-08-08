@@ -1,0 +1,66 @@
+name: GCP VM Provisioning with Terraform & Ansible
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: terraform
+
+    steps:
+    - name: 📥 Checkout Code
+      uses: actions/checkout@v3
+
+    - name: 🧰 Set up Terraform
+      uses: hashicorp/setup-terraform@v3
+
+    - name: 🔐 Write GCP Credentials file
+      run: |
+        echo '${{ secrets.GOOGLE_CREDENTIALS }}' > $HOME/gcp-creds.json
+        echo "GOOGLE_APPLICATION_CREDENTIALS=$HOME/gcp-creds.json" >> $GITHUB_ENV
+
+    - name: 🔑 Write SSH Keys
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
+        chmod 644 ~/.ssh/id_rsa.pub
+
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+
+    - name: 🌱 Terraform Init
+      run: terraform init
+
+    - name: 📊 Terraform Plan
+      run: terraform plan -var="ssh_user=${{ secrets.SSH_USER }}" -var="ssh_pub_key=${{ secrets.SSH_PUBLIC_KEY }}"
+
+    - name: 🚀 Terraform Apply
+      run: terraform apply -auto-approve -var="ssh_user=${{ secrets.SSH_USER }}" -var="ssh_pub_key=${{ secrets.SSH_PUBLIC_KEY }}"
+
+    - name: 🧾 Get Terraform Output (VM IP)
+      id: tf_output
+      run: |
+        echo "VM_IP=$(terraform output -raw vm_ip)" >> $GITHUB_ENV
+
+    - name: 🧪 Install Ansible
+      run: |
+        sudo apt update && sudo apt install -y ansible
+
+    - name: 🧾 Write Shared Public Key from Secret
+      run: |
+        mkdir -p ../ansible/keys
+        echo "${{ secrets.SHARED_PUB_KEY }}" > ../ansible/keys/shared.pub
+
+    - name: 📝 Update Inventory with VM IP
+      run: |
+        echo "Creating dynamic inventory..."
+        sed "s/REPLACE_ME/${VM_IP}/" ../ansible/inventory.ini > ../ansible/inventory_dynamic.ini
+
+    - name: ▶️ Run Ansible Playbook
+      run: |
+        ansible-playbook -i ../ansible/inventory_dynamic.ini ../ansible/create_users.yml
