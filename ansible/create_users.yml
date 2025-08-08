@@ -1,4 +1,5 @@
 ---
+# ✅ Ansible Playbook: create_users.yml
 - name: Setup user-port restricted SSH access
   hosts: all
   become: true
@@ -53,6 +54,7 @@
           AllowTcpForwarding yes
           X11Forwarding no
           Subsystem sftp /usr/lib/openssh/sftp-server
+      loop: "{{ users_and_ports }}"
 
     - name: Create systemd sshd@.service template
       copy:
