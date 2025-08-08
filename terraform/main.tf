@@ -16,13 +16,13 @@ terraform {
 }
 
 provider "google" {
-  project     = "shubham-project-468314"
-  region      = "us-central1"
-  zone        = "us-central1-a"
+  project = "shubham-project-468314"
+  region  = "us-central1"
+  zone    = "us-central1-a"
 }
 
 resource "google_compute_instance" "vm_instance" {
-  name         = "small-seeww"
+  name         = "small-seessww"
   machine_type = "e2-small"
   zone         = "us-central1-a"
   tags         = ["ssh-access"]
@@ -43,24 +43,32 @@ resource "google_compute_instance" "vm_instance" {
 
     startup-script = <<-EOF
       #!/bin/bash
-      set -e
+      set -euo pipefail
 
-      # Ensure sshd privilege separation dir exists
+      # Ensure priv-sep dir (usually created by service, but harmless)
       mkdir -p /run/sshd
       chmod 755 /run/sshd
 
-      # Add extra ports if not already present
-      PORTS="22 2221 2222 2223 2224 2225"
-      for PORT in $PORTS; do
-        grep -q "^Port $PORT" /etc/ssh/sshd_config || echo "Port $PORT" >> /etc/ssh/sshd_config
-      done
+      # Make sure ONLY port 22 is in the default sshd_config
+      # (remove any stray 2221-2225 entries if the base image ever had them)
+      sed -i -E '/^Port (2221|2222|2223|2224|2225)$/d' /etc/ssh/sshd_config
+      if ! grep -qE '^[#\\s]*Port 22$' /etc/ssh/sshd_config; then
+        # uncomment or add Port 22
+        if grep -qE '^#\\s*Port 22$' /etc/ssh/sshd_config; then
+          sed -i -E 's/^#\\s*Port 22$/Port 22/' /etc/ssh/sshd_config
+        else
+          echo 'Port 22' >> /etc/ssh/sshd_config
+        fi
+      fi
 
-      # Restart ssh service
-      systemctl restart sshd
+      # Restart the Ubuntu ssh unit (name is 'ssh', not 'sshd')
+      systemctl restart ssh
+      systemctl enable ssh
     EOF
   }
 }
 
+# Firewall: open 22 and the custom ports (Ansible will run sshd instances)
 resource "google_compute_firewall" "allow_custom_ssh" {
   name    = "allow-custom-ssh"
   network = "default"
