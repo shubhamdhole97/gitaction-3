@@ -37,31 +37,36 @@
         remote_src: no
       loop: "{{ user_ports }}"
 
-    - name: Copy base sshd_config template
+    - name: Copy base sshd_config for each user
       copy:
         src: /etc/ssh/sshd_config
         dest: "/etc/ssh/sshd_config_{{ item.port }}"
         remote_src: yes
       loop: "{{ user_ports }}"
 
-    - name: Customize sshd_config for each user
+    - name: Set custom Port in each sshd_config
       lineinfile:
         path: "/etc/ssh/sshd_config_{{ item.port }}"
         regexp: '^Port '
         line: "Port {{ item.port }}"
-        state: present
       loop: "{{ user_ports }}"
 
-    - name: Set AllowUsers in each sshd_config
+    - name: Restrict user access per port using AllowUsers
       lineinfile:
         path: "/etc/ssh/sshd_config_{{ item.port }}"
         regexp: '^AllowUsers '
         line: "AllowUsers {{ item.name }}"
-        state: present
         insertafter: EOF
       loop: "{{ user_ports }}"
 
-    - name: Launch sshd on custom port
+    - name: Disable password authentication
+      lineinfile:
+        path: "/etc/ssh/sshd_config_{{ item.port }}"
+        regexp: '^PasswordAuthentication '
+        line: "PasswordAuthentication no"
+      loop: "{{ user_ports }}"
+
+    - name: Start additional sshd instance for each user
       shell: |
         /usr/sbin/sshd -f /etc/ssh/sshd_config_{{ item.port }}
       args:
