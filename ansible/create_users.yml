@@ -1,5 +1,7 @@
 ---
-# ✅ Ansible Playbook: create_users.yml (Final with corrected ssh service name)
+# ✅ FINAL FIXED Ansible Playbook: create_users.yml
+# Enforces strict per-port SSH login and disables default ssh
+
 - name: Setup user-port restricted SSH access
   hosts: all
   become: true
@@ -12,19 +14,6 @@
       - { name: shubham, port: 2224 }
 
   tasks:
-    - name: Disable default sshd on port 22
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^Port '
-        state: absent
-      notify: Restart SSH
-
-    - name: Stop and disable default ssh service
-      systemd:
-        name: ssh
-        enabled: false
-        state: stopped
-
     - name: Create users
       user:
         name: "{{ item.name }}"
@@ -50,6 +39,12 @@
         mode: '0600'
       loop: "{{ users_and_ports }}"
 
+    - name: Disable and stop default SSH service (port 22)
+      systemd:
+        name: ssh
+        enabled: false
+        state: stopped
+
     - name: Create sshd_config for each user/port
       copy:
         dest: "/etc/ssh/sshd_config_{{ item.port }}"
@@ -69,7 +64,7 @@
           Subsystem sftp /usr/lib/openssh/sftp-server
       loop: "{{ users_and_ports }}"
 
-    - name: Create systemd sshd@.service template
+    - name: Create systemd sshd@.service template for per-port sshd
       copy:
         dest: /etc/systemd/system/sshd@.service
         content: |
@@ -83,21 +78,13 @@
 
           [Install]
           WantedBy=multi-user.target
-      notify: Reload systemd
 
-    - name: Start sshd instance per user/port
+    - name: Reload systemd after new sshd@.service added
+      command: systemctl daemon-reload
+
+    - name: Start per-port sshd instances for each user
       systemd:
         name: sshd@{{ item.port }}
         enabled: true
         state: started
       loop: "{{ users_and_ports }}"
-      notify: Reload systemd
-
-  handlers:
-    - name: Reload systemd
-      command: systemctl daemon-reload
-
-    - name: Restart SSH
-      service:
-        name: ssh
-        state: restarted
