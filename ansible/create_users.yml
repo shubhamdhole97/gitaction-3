@@ -1,5 +1,5 @@
 ---
-# ✅ Ansible Playbook: create_users.yml
+# ✅ Ansible Playbook: create_users.yml (Updated to disable default sshd)
 - name: Setup user-port restricted SSH access
   hosts: all
   become: true
@@ -12,6 +12,19 @@
       - { name: shubham, port: 2224 }
 
   tasks:
+    - name: Disable default sshd on port 22
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^Port '
+        state: absent
+      notify: Restart SSH
+
+    - name: Stop and disable default sshd service
+      systemd:
+        name: sshd
+        enabled: false
+        state: stopped
+
     - name: Create users
       user:
         name: "{{ item.name }}"
@@ -83,3 +96,8 @@
   handlers:
     - name: Reload systemd
       command: systemctl daemon-reload
+
+    - name: Restart SSH
+      service:
+        name: sshd
+        state: restarted
