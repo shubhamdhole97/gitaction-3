@@ -22,7 +22,7 @@ provider "google" {
 }
 
 resource "google_compute_instance" "vm_instance" {
-  name         = "small-servesssrrr"
+  name         = "small-ser"
   machine_type = "e2-small"
   zone         = "us-central1-a"
   tags         = ["ssh-access"]
