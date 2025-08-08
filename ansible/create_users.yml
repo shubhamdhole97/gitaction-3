@@ -1,5 +1,5 @@
 ---
-- name: Create users and setup per-port ssh access
+- name: Setup user-port restricted SSH access
   hosts: all
   become: true
 
@@ -18,7 +18,7 @@
         create_home: yes
       loop: "{{ users_and_ports }}"
 
-    - name: Create .ssh directory
+    - name: Ensure .ssh directory exists
       file:
         path: "/home/{{ item.name }}/.ssh"
         state: directory
@@ -27,7 +27,7 @@
         mode: '0700'
       loop: "{{ users_and_ports }}"
 
-    - name: Copy shared public key to authorized_keys
+    - name: Add shared public key to authorized_keys
       copy:
         src: keys/shared.pub
         dest: "/home/{{ item.name }}/.ssh/authorized_keys"
@@ -36,7 +36,7 @@
         mode: '0600'
       loop: "{{ users_and_ports }}"
 
-    - name: Create sshd config for each user
+    - name: Create sshd_config for each user/port
       copy:
         dest: "/etc/ssh/sshd_config_{{ item.port }}"
         content: |
@@ -53,14 +53,13 @@
           AllowTcpForwarding yes
           X11Forwarding no
           Subsystem sftp /usr/lib/openssh/sftp-server
-      loop: "{{ users_and_ports }}"
 
-    - name: Create sshd@.service template
+    - name: Create systemd sshd@.service template
       copy:
         dest: /etc/systemd/system/sshd@.service
         content: |
           [Unit]
-          Description=OpenSSH server per-port instance for %%i
+          Description=Per-port OpenSSH server for %%i
           After=network.target
 
           [Service]
@@ -71,10 +70,10 @@
           WantedBy=multi-user.target
       notify: Reload systemd
 
-    - name: Start sshd instance for each user
+    - name: Start sshd instance per user/port
       systemd:
         name: sshd@{{ item.port }}
-        enabled: yes
+        enabled: true
         state: started
       loop: "{{ users_and_ports }}"
       notify: Reload systemd
