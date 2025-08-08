@@ -2,6 +2,7 @@
 - name: Create users and setup per-port ssh access
   hosts: all
   become: true
+
   vars:
     users_and_ports:
       - { name: user1, port: 2221 }
@@ -13,7 +14,6 @@
     - name: Create users
       user:
         name: "{{ item.name }}"
-        state: present
         shell: /bin/bash
         create_home: yes
       loop: "{{ users_and_ports }}"
@@ -55,20 +55,12 @@
           Subsystem sftp /usr/lib/openssh/sftp-server
       loop: "{{ users_and_ports }}"
 
-    - name: Start additional sshd instances
-      systemd:
-        name: sshd@{{ item.port }}
-        enabled: yes
-        state: started
-        daemon_reload: yes
-      loop: "{{ users_and_ports }}"
-
-    - name: Create sshd@.service override (template)
+    - name: Create sshd@.service template
       copy:
         dest: /etc/systemd/system/sshd@.service
         content: |
           [Unit]
-          Description=OpenSSH per-port server for %%i
+          Description=OpenSSH server per-port instance for %%i
           After=network.target
 
           [Service]
@@ -79,6 +71,14 @@
           WantedBy=multi-user.target
       notify: Reload systemd
 
+    - name: Start sshd instance for each user
+      systemd:
+        name: sshd@{{ item.port }}
+        enabled: yes
+        state: started
+      loop: "{{ users_and_ports }}"
+      notify: Reload systemd
+
   handlers:
     - name: Reload systemd
-      command: systemctl daemon-reexec
+      command: systemctl daemon-reload
