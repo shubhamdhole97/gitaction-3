@@ -11,7 +11,7 @@
       - { name: "shubham", port: 2224 }
 
     shared_pubkey_src: "keys/shared.pub"  # on controller
-    disable_port_22: true                 # stop default ssh after all good
+    disable_port_22: true                 # stop default ssh after success
 
   tasks:
     - name: Ensure OpenSSH server is installed
@@ -123,6 +123,28 @@
       systemd:
         daemon_reload: yes
 
+    # --- IMPORTANT: free custom ports from the default sshd ---
+    - name: Ensure default sshd only listens on 22 (free custom ports)
+      block:
+        - name: Remove extra Port lines from default /etc/ssh/sshd_config
+          lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: '^Port (2221|2222|2223|2224|2225)$'
+            state: absent
+
+        - name: Ensure Port 22 is present (once)
+          lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: '^#?\s*Port 22$'
+            line: 'Port 22'
+            state: present
+
+        - name: Restart default sshd to release ports
+          systemd:
+            name: ssh
+            state: restarted
+    # ----------------------------------------------------------
+
     - name: Enable & start per-port sshd instances
       systemd:
         name: "sshd@{{ item.port }}"
@@ -139,7 +161,7 @@
       loop: "{{ start_results.results }}"
 
     - name: Fetch journal for failing units
-      command: "journalctl -xeu sshd@{{ item.item.port }} --no-pager | tail -n 120"
+      shell: "journalctl -xeu sshd@{{ item.item.port }} --no-pager | tail -n 120"
       when: item is failed
       loop: "{{ start_results.results }}"
       register: journals
@@ -157,23 +179,7 @@
         fail_msg: "One or more sshd@PORT instances failed to start. See logs above."
         success_msg: "All sshd@PORT instances started successfully."
 
-    # Optional: allow ports in UFW if present; ignore if ufw absent
-    - name: Allow ports in UFW if available
-      command: "ufw allow {{ item.port }}/tcp"
-      loop: "{{ user_ports }}"
-      register: ufw_result
-      changed_when: "'Skipping' not in (ufw_result.stdout | default(''))"
-      failed_when: false
-
-    - name: Show listening sshd sockets
-      command: bash -lc "ss -tulpn | grep -E ':(2221|2222|2223|2224)\\s' || true"
-      register: ss_out
-      changed_when: false
-
-    - debug:
-        var: ss_out.stdout
-
-    # Stop default ssh only AFTER custom instances are up
+    # Optional: stop default ssh only AFTER instances are up
     - name: Stop & disable default sshd on 22
       systemd:
         name: ssh
