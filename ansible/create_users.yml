@@ -1,8 +1,7 @@
 ---
-- name: Per-user exclusive SSH ports (systemd-managed, validated)
+- name: Minimal per-user per-port sshd (no PIDFile, no forking)
   hosts: all
   become: true
-
   vars:
     user_ports:
       - { name: "alice",   port: 2221 }
@@ -10,17 +9,18 @@
       - { name: "charlie", port: 2223 }
       - { name: "shubham", port: 2224 }
 
-    shared_pubkey_src: "keys/shared.pub"  # on controller
-    disable_port_22: true                 # stop default ssh after success
-
   tasks:
-    - name: Ensure OpenSSH server is installed
+    - name: Ensure OpenSSH is installed and host keys exist
       apt:
         name: openssh-server
         state: present
         update_cache: yes
 
-    - name: Ensure privsep dir exists
+    - name: Generate host keys (idempotent)
+      command: ssh-keygen -A
+      changed_when: false
+
+    - name: Ensure priv-sep dir exists
       file:
         path: /run/sshd
         state: directory
@@ -28,47 +28,35 @@
         group: root
         mode: "0755"
 
-    - name: Ensure users exist
-      user:
-        name: "{{ item.name }}"
+    # IMPORTANT: free ports from default sshd so instances can bind
+    - name: Remove custom ports from default sshd_config
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^Port (2221|2222|2223|2224|2225)$'
+        state: absent
+
+    - name: Ensure Port 22 exists in default
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?\s*Port 22$'
+        line: 'Port 22'
         state: present
-        shell: /bin/bash
-        create_home: yes
-      loop: "{{ user_ports }}"
 
-    - name: Create ~/.ssh for each user
-      file:
-        path: "/home/{{ item.name }}/.ssh"
-        state: directory
-        mode: "0700"
-        owner: "{{ item.name }}"
-        group: "{{ item.name }}"
-      loop: "{{ user_ports }}"
+    - name: Restart default sshd
+      systemd:
+        name: ssh
+        state: restarted
+        enabled: yes
 
-    - name: Install shared authorized_keys for each user
-      copy:
-        src: "{{ shared_pubkey_src }}"
-        dest: "/home/{{ item.name }}/.ssh/authorized_keys"
-        owner: "{{ item.name }}"
-        group: "{{ item.name }}"
-        mode: "0600"
-        remote_src: no
-      loop: "{{ user_ports }}"
-
-    - name: Write minimal per-port sshd configs (only allow mapped user)
+    - name: Write minimal per-port configs (no PIDFile)
       copy:
         dest: "/etc/ssh/sshd_config_{{ item.port }}"
-        owner: root
-        group: root
         mode: "0644"
         content: |
-          # Isolated sshd for port {{ item.port }}
           Port {{ item.port }}
           ListenAddress 0.0.0.0
           Protocol 2
           AddressFamily any
-          PidFile /run/sshd/sshd-{{ item.port }}.pid
-
           PermitRootLogin no
           PasswordAuthentication no
           PubkeyAuthentication yes
@@ -79,28 +67,18 @@
           PrintMotd no
           ClientAliveInterval 300
           ClientAliveCountMax 2
-
-          # Restrict to single user for this port
           AllowUsers {{ item.name }}
-
-          # Load distro defaults last (safe)
           Include /etc/ssh/sshd_config.d/*.conf
       loop: "{{ user_ports }}"
 
-    - name: Ensure SSH host keys exist
-      command: ssh-keygen -A
-      changed_when: false
-
-    - name: Validate per-port sshd configs
+    - name: Validate configs
       command: "sshd -t -f /etc/ssh/sshd_config_{{ item.port }}"
       loop: "{{ user_ports }}"
       changed_when: false
 
-    - name: Install systemd template for per-port sshd
+    - name: Install systemd template (Type=simple, no PIDFile, -D)
       copy:
         dest: /etc/systemd/system/sshd@.service
-        owner: root
-        group: root
         mode: "0644"
         content: |
           [Unit]
@@ -109,11 +87,9 @@
           Wants=network.target
 
           [Service]
-          Type=forking
-          PIDFile=/run/sshd/sshd-%i.pid
+          Type=simple
           ExecStartPre=/usr/sbin/sshd -t -f /etc/ssh/sshd_config_%i
-          ExecStart=/usr/sbin/sshd -f /etc/ssh/sshd_config_%i
-          ExecReload=/bin/kill -HUP $MAINPID
+          ExecStart=/usr/sbin/sshd -D -f /etc/ssh/sshd_config_%i
           Restart=on-failure
 
           [Install]
@@ -123,66 +99,9 @@
       systemd:
         daemon_reload: yes
 
-    # --- IMPORTANT: free custom ports from the default sshd ---
-    - name: Ensure default sshd only listens on 22 (free custom ports)
-      block:
-        - name: Remove extra Port lines from default /etc/ssh/sshd_config
-          lineinfile:
-            path: /etc/ssh/sshd_config
-            regexp: '^Port (2221|2222|2223|2224|2225)$'
-            state: absent
-
-        - name: Ensure Port 22 is present (once)
-          lineinfile:
-            path: /etc/ssh/sshd_config
-            regexp: '^#?\s*Port 22$'
-            line: 'Port 22'
-            state: present
-
-        - name: Restart default sshd to release ports
-          systemd:
-            name: ssh
-            state: restarted
-    # ----------------------------------------------------------
-
-    - name: Enable & start per-port sshd instances
+    - name: Enable & start per-port instances
       systemd:
         name: "sshd@{{ item.port }}"
         state: started
         enabled: yes
       loop: "{{ user_ports }}"
-      register: start_results
-      ignore_errors: true
-
-    - name: Show failing units (if any)
-      debug:
-        msg: "Port {{ item.item.port }} failed to start: {{ item.msg | default('') }}"
-      when: item is failed
-      loop: "{{ start_results.results }}"
-
-    - name: Fetch journal for failing units
-      shell: "journalctl -xeu sshd@{{ item.item.port }} --no-pager | tail -n 120"
-      when: item is failed
-      loop: "{{ start_results.results }}"
-      register: journals
-      changed_when: false
-
-    - name: Print journal snippets
-      debug:
-        var: journals.results | map(attribute='stdout') | list
-      when: journals is defined and (journals.results | length) > 0
-
-    - name: Fail if any sshd instances failed
-      assert:
-        that:
-          - (start_results.results | select('failed') | list | length) == 0
-        fail_msg: "One or more sshd@PORT instances failed to start. See logs above."
-        success_msg: "All sshd@PORT instances started successfully."
-
-    # Optional: stop default ssh only AFTER instances are up
-    - name: Stop & disable default sshd on 22
-      systemd:
-        name: ssh
-        state: stopped
-        enabled: no
-      when: disable_port_22
