@@ -1,5 +1,5 @@
 ---
-# ✅ Ansible Playbook: create_users.yml (Updated to disable default sshd)
+# ✅ Ansible Playbook: create_users.yml (Final with corrected ssh service name)
 - name: Setup user-port restricted SSH access
   hosts: all
   become: true
@@ -19,9 +19,9 @@
         state: absent
       notify: Restart SSH
 
-    - name: Stop and disable default sshd service
+    - name: Stop and disable default ssh service
       systemd:
-        name: sshd
+        name: ssh
         enabled: false
         state: stopped
 
@@ -99,5 +99,5 @@
 
     - name: Restart SSH
       service:
-        name: sshd
+        name: ssh
         state: restarted
