@@ -25,7 +25,7 @@ resource "google_compute_instance" "vm_instance" {
   name         = "small-see"
   machine_type = "e2-small"
   zone         = "us-central1-a"
-  tags         = ["ssh-access"]  # tag used for firewall targeting
+  tags         = ["ssh-access"]
 
   boot_disk {
     initialize_params {
@@ -43,16 +43,24 @@ resource "google_compute_instance" "vm_instance" {
 
     startup-script = <<-EOF
       #!/bin/bash
+      set -e
+
+      # Ensure sshd privilege separation dir exists
+      mkdir -p /run/sshd
+      chmod 755 /run/sshd
+
+      # Add extra ports if not already present
       PORTS="22 2221 2222 2223 2224 2225"
       for PORT in $PORTS; do
         grep -q "^Port $PORT" /etc/ssh/sshd_config || echo "Port $PORT" >> /etc/ssh/sshd_config
       done
+
+      # Restart ssh service
       systemctl restart sshd
     EOF
   }
 }
 
-# ✅ Firewall rule to allow SSH on multiple ports
 resource "google_compute_firewall" "allow_custom_ssh" {
   name    = "allow-custom-ssh"
   network = "default"

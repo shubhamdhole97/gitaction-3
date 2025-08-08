@@ -1,94 +1,108 @@
 ---
-- name: Strict per-user SSH access per port
+- name: Per-user exclusive SSH ports (systemd-managed)
   hosts: all
   become: true
+
   vars:
     user_ports:
-      - { name: "alice", port: 2221 }
-      - { name: "bob", port: 2222 }
+      - { name: "alice",   port: 2221 }
+      - { name: "bob",     port: 2222 }
       - { name: "charlie", port: 2223 }
       - { name: "shubham", port: 2224 }
+    disable_port_22: true
+    shared_pubkey_src: "keys/shared.pub"
 
   tasks:
+    - name: Ensure OpenSSH server is installed
+      apt: { name: openssh-server, state: present, update_cache: yes }
 
-    - name: 🔒 Stop and disable default SSH (port 22)
-      systemd:
-        name: ssh
-        enabled: no
-        state: stopped
+    - name: Stop & disable default sshd on 22
+      systemd: { name: ssh, enabled: no, state: stopped }
+      when: disable_port_22
 
-    - name: ✅ Ensure /run/sshd exists (needed for custom sshd)
-      file:
-        path: /run/sshd
-        state: directory
-        owner: root
-        group: root
-        mode: '0755'
+    - name: Ensure /run/sshd exists
+      file: { path: /run/sshd, state: directory, owner: root, group: root, mode: "0755" }
 
-    - name: 👤 Create users
-      user:
-        name: "{{ item.name }}"
-        state: present
-        shell: /bin/bash
-        create_home: yes
+    - name: Ensure users exist
+      user: { name: "{{ item.name }}", state: present, shell: /bin/bash, create_home: yes }
       loop: "{{ user_ports }}"
 
-    - name: 📁 Create .ssh directory
+    - name: Create ~/.ssh
       file:
         path: "/home/{{ item.name }}/.ssh"
         state: directory
-        mode: '0700'
+        mode: "0700"
         owner: "{{ item.name }}"
         group: "{{ item.name }}"
       loop: "{{ user_ports }}"
 
-    - name: 🔑 Add public key to authorized_keys
+    - name: Install authorized_keys
       copy:
-        src: keys/shared.pub
+        src: "{{ shared_pubkey_src }}"
         dest: "/home/{{ item.name }}/.ssh/authorized_keys"
         owner: "{{ item.name }}"
         group: "{{ item.name }}"
-        mode: '0600'
+        mode: "0600"
         remote_src: no
       loop: "{{ user_ports }}"
 
-    - name: 📄 Copy base sshd_config for each user port
+    - name: Write per-port sshd configs (each allows only its user)
       copy:
-        src: /etc/ssh/sshd_config
         dest: "/etc/ssh/sshd_config_{{ item.port }}"
-        remote_src: yes
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          Port {{ item.port }}
+          ListenAddress 0.0.0.0
+          Protocol 2
+          AddressFamily any
+          PidFile /run/sshd/sshd-{{ item.port }}.pid
+          PermitRootLogin no
+          PasswordAuthentication no
+          PubkeyAuthentication yes
+          AuthorizedKeysFile .ssh/authorized_keys
+          ChallengeResponseAuthentication no
+          UsePAM yes
+          X11Forwarding no
+          PrintMotd no
+          ClientAliveInterval 300
+          ClientAliveCountMax 2
+          AllowUsers {{ item.name }}
+          Include /etc/ssh/sshd_config.d/*.conf
       loop: "{{ user_ports }}"
 
-    - name: ⚙️ Set custom Port in sshd_config
-      lineinfile:
-        path: "/etc/ssh/sshd_config_{{ item.port }}"
-        regexp: '^Port '
-        line: "Port {{ item.port }}"
+    - name: Systemd template for per-port sshd
+      copy:
+        dest: /etc/systemd/system/sshd@.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=OpenSSH per-port instance %i
+          After=network.target
+          Wants=network.target
+          [Service]
+          Type=forking
+          PIDFile=/run/sshd/sshd-%i.pid
+          ExecStart=/usr/sbin/sshd -f /etc/ssh/sshd_config_%i
+          ExecReload=/bin/kill -HUP $MAINPID
+          Restart=on-failure
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd
+      systemd: { daemon_reload: yes }
+
+    - name: Enable & start instances
+      systemd:
+        name: "sshd@{{ item.port }}"
+        state: started
+        enabled: yes
       loop: "{{ user_ports }}"
 
-    - name: 🚫 Restrict login to single user per port
-      lineinfile:
-        path: "/etc/ssh/sshd_config_{{ item.port }}"
-        regexp: '^AllowUsers '
-        line: "AllowUsers {{ item.name }}"
-        insertafter: EOF
-      loop: "{{ user_ports }}"
+    - name: Show listening ports
+      command: bash -lc "ss -tulpn | grep -E ':(2221|2222|2223|2224)\\s' || true"
+      register: ss_out
+      changed: false
 
-    - name: 🔒 Disable root login
-      lineinfile:
-        path: "/etc/ssh/sshd_config_{{ item.port }}"
-        regexp: '^PermitRootLogin '
-        line: "PermitRootLogin no"
-      loop: "{{ user_ports }}"
-
-    - name: 🔐 Disable password authentication
-      lineinfile:
-        path: "/etc/ssh/sshd_config_{{ item.port }}"
-        regexp: '^PasswordAuthentication '
-        line: "PasswordAuthentication no"
-      loop: "{{ user_ports }}"
-
-    - name: 🚀 Start sshd for each custom port
-      shell: |
-        /usr/sbin/sshd -f /etc/ssh/sshd_config_{{ item.port }}
-      loop: "{{ user_ports }}"
+    - debug: { var: ss_out.stdout }
