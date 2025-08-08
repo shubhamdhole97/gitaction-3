@@ -7,14 +7,13 @@ on:
 jobs:
   terraform:
     runs-on: ubuntu-latest
-
     defaults:
       run:
         working-directory: terraform
 
     steps:
     - name: 📥 Checkout Code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: 🧰 Set up Terraform
       uses: hashicorp/setup-terraform@v3
@@ -24,12 +23,11 @@ jobs:
         echo '${{ secrets.GOOGLE_CREDENTIALS }}' > $HOME/gcp-creds.json
         echo "GOOGLE_APPLICATION_CREDENTIALS=$HOME/gcp-creds.json" >> $GITHUB_ENV
 
-    - name: 🔑 Write SSH Keys
+    - name: 🔑 Write SSH Keys for Ansible
       run: |
         mkdir -p ~/.ssh
         echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
         chmod 644 ~/.ssh/id_rsa.pub
-
         echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
 
@@ -43,24 +41,43 @@ jobs:
       run: terraform apply -auto-approve -var="ssh_user=${{ secrets.SSH_USER }}" -var="ssh_pub_key=${{ secrets.SSH_PUBLIC_KEY }}"
 
     - name: 🧾 Get Terraform Output (VM IP)
-      id: tf_output
+      id: tf
       run: |
         echo "VM_IP=$(terraform output -raw vm_ip)" >> $GITHUB_ENV
+        echo "vm_ip=$(terraform output -raw vm_ip)" >> $GITHUB_OUTPUT
 
     - name: 🧪 Install Ansible
       run: |
-        sudo apt update && sudo apt install -y ansible
+        sudo apt update
+        sudo apt install -y ansible
 
-    - name: 🧾 Write Shared Public Key from Secret
+    - name: 🔐 Write shared public key for users
       run: |
         mkdir -p ../ansible/keys
         echo "${{ secrets.SHARED_PUB_KEY }}" > ../ansible/keys/shared.pub
 
-    - name: 📝 Update Inventory with VM IP
+    - name: 📝 Create dynamic inventory with VM IP
       run: |
         echo "Creating dynamic inventory..."
         sed "s/REPLACE_ME/${VM_IP}/" ../ansible/inventory.ini > ../ansible/inventory_dynamic.ini
+        echo "Inventory:"
+        cat ../ansible/inventory_dynamic.ini
+
+    - name: ⏳ Wait for SSH to be ready
+      env:
+        VM_IP: ${{ env.VM_IP }}
+      run: |
+        for i in {1..30}; do
+          if ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ubuntu@${VM_IP} "echo ok" >/dev/null 2>&1; then
+            echo "SSH is ready"; break
+          fi
+          echo "Waiting for SSH (${i})..."
+          sleep 5
+        done
 
     - name: ▶️ Run Ansible Playbook
       run: |
+        ansible --version
+        ansible-inventory -i ../ansible/inventory_dynamic.ini --list
+        ansible -i ../ansible/inventory_dynamic.ini all -m ping
         ansible-playbook -i ../ansible/inventory_dynamic.ini ../ansible/create_users.yml
