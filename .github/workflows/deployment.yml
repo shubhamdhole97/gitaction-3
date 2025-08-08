@@ -37,4 +37,4 @@
 
     - name: ▶️ Run Ansible: Enforce strict per-user SSH port access
       run: |
-        ansible-playbook -i ../ansible/inventory_dynamic.ini ../ansible/user_port_ssh_restrict.yml
+        ansible-playbook -i ../ansible/inventory_dynamic.ini ../ansible/create_users.yml
