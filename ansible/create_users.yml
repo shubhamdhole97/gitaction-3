@@ -5,9 +5,9 @@
 
   vars:
     ser_ports:
-      - { name: "alice",   port: 2221 }
-      - { name: "bob",     port: 2222 }
-      - { name: "charlie", port: 2223 }
+      - { name: "user1",   port: 2221 }
+      - { name: "user2",     port: 2222 }
+      - { name: "user3", port: 2223 }
       - { name: "shubham", port: 2224 }
 
   tasks:
