@@ -1,5 +1,5 @@
 ---
-- name: Create users with port-specific SSH access
+- name: Strict per-user SSH access per port
   hosts: all
   become: true
   vars:
@@ -10,7 +10,8 @@
       - { name: "shubham", port: 2224 }
 
   tasks:
-    - name: Ensure user exists
+
+    - name: Create users
       user:
         name: "{{ item.name }}"
         state: present
@@ -18,7 +19,7 @@
         create_home: yes
       loop: "{{ user_ports }}"
 
-    - name: Ensure .ssh directory exists
+    - name: Create .ssh directory
       file:
         path: "/home/{{ item.name }}/.ssh"
         state: directory
@@ -27,7 +28,7 @@
         group: "{{ item.name }}"
       loop: "{{ user_ports }}"
 
-    - name: Add shared public key to authorized_keys
+    - name: Add public key to authorized_keys
       copy:
         src: keys/shared.pub
         dest: "/home/{{ item.name }}/.ssh/authorized_keys"
@@ -37,26 +38,33 @@
         remote_src: no
       loop: "{{ user_ports }}"
 
-    - name: Copy base sshd_config for each user
+    - name: Copy base sshd_config for each user port
       copy:
         src: /etc/ssh/sshd_config
         dest: "/etc/ssh/sshd_config_{{ item.port }}"
         remote_src: yes
       loop: "{{ user_ports }}"
 
-    - name: Set custom Port in each sshd_config
+    - name: Set custom Port in sshd_config
       lineinfile:
         path: "/etc/ssh/sshd_config_{{ item.port }}"
         regexp: '^Port '
         line: "Port {{ item.port }}"
       loop: "{{ user_ports }}"
 
-    - name: Restrict user access per port using AllowUsers
+    - name: Restrict login to single user per port
       lineinfile:
         path: "/etc/ssh/sshd_config_{{ item.port }}"
         regexp: '^AllowUsers '
         line: "AllowUsers {{ item.name }}"
         insertafter: EOF
+      loop: "{{ user_ports }}"
+
+    - name: Disable root login
+      lineinfile:
+        path: "/etc/ssh/sshd_config_{{ item.port }}"
+        regexp: '^PermitRootLogin '
+        line: "PermitRootLogin no"
       loop: "{{ user_ports }}"
 
     - name: Disable password authentication
@@ -66,9 +74,7 @@
         line: "PasswordAuthentication no"
       loop: "{{ user_ports }}"
 
-    - name: Start additional sshd instance for each user
+    - name: Start sshd for each custom port
       shell: |
         /usr/sbin/sshd -f /etc/ssh/sshd_config_{{ item.port }}
-      args:
-        executable: /bin/bash
       loop: "{{ user_ports }}"
