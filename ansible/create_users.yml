@@ -1,12 +1,13 @@
 ---
-- name: Create users on GCP VM
+- name: Create users on GCP VM and configure SSH access with custom ports
   hosts: all
   become: true
+
   vars:
     users_to_create:
-      - alice
-      - bob
-      - charlie
+      - user1
+      - user2
+      - user3
       - shubham
 
   tasks:
@@ -22,17 +23,45 @@
       file:
         path: "/home/{{ item }}/.ssh"
         state: directory
-        mode: 0700
+        mode: '0700'
         owner: "{{ item }}"
         group: "{{ item }}"
       loop: "{{ users_to_create }}"
 
     - name: Add shared public key to authorized_keys
       copy:
-        src: keys/shared.pub        # Relative to playbook or working dir
+        src: keys/shared.pub
         dest: "/home/{{ item }}/.ssh/authorized_keys"
         owner: "{{ item }}"
         group: "{{ item }}"
-        mode: 0600
-        remote_src: no              # <--- THIS IS CRUCIAL!
+        mode: '0600'
+        remote_src: no
       loop: "{{ users_to_create }}"
+
+    - name: Add custom SSH ports and Match User config
+      blockinfile:
+        path: /etc/ssh/sshd_config
+        block: |
+          Port 2221
+          Port 2222
+          Port 2223
+          Port 2224
+
+          Match User user1
+            Port 2221
+
+          Match User user2
+            Port 2222
+
+          Match User user3
+            Port 2223
+
+          Match User shubham
+            Port 2224
+      notify: Restart SSH
+
+  handlers:
+    - name: Restart SSH
+      service:
+        name: ssh
+        state: restarted
