@@ -1,5 +1,5 @@
 ---
-- name: Per-user exclusive SSH ports (systemd-managed)
+- name: Per-user exclusive SSH ports (systemd-managed, validated)
   hosts: all
   become: true
 
@@ -10,9 +10,8 @@
       - { name: "charlie", port: 2223 }
       - { name: "shubham", port: 2224 }
 
-    # Disable default SSH on 22 after custom instances are up.
-    disable_port_22: true
-    shared_pubkey_src: "keys/shared.pub"   # on your controller machine
+    shared_pubkey_src: "keys/shared.pub"  # on controller
+    disable_port_22: true                 # stop default ssh after all good
 
   tasks:
     - name: Ensure OpenSSH server is installed
@@ -68,11 +67,8 @@
           ListenAddress 0.0.0.0
           Protocol 2
           AddressFamily any
-
-          # Separate PID per instance
           PidFile /run/sshd/sshd-{{ item.port }}.pid
 
-          # Security/auth
           PermitRootLogin no
           PasswordAuthentication no
           PubkeyAuthentication yes
@@ -87,9 +83,18 @@
           # Restrict to single user for this port
           AllowUsers {{ item.name }}
 
-          # Load distro extras last (safe)
+          # Load distro defaults last (safe)
           Include /etc/ssh/sshd_config.d/*.conf
       loop: "{{ user_ports }}"
+
+    - name: Ensure SSH host keys exist
+      command: ssh-keygen -A
+      changed_when: false
+
+    - name: Validate per-port sshd configs
+      command: "sshd -t -f /etc/ssh/sshd_config_{{ item.port }}"
+      loop: "{{ user_ports }}"
+      changed_when: false
 
     - name: Install systemd template for per-port sshd
       copy:
@@ -106,6 +111,7 @@
           [Service]
           Type=forking
           PIDFile=/run/sshd/sshd-%i.pid
+          ExecStartPre=/usr/sbin/sshd -t -f /etc/ssh/sshd_config_%i
           ExecStart=/usr/sbin/sshd -f /etc/ssh/sshd_config_%i
           ExecReload=/bin/kill -HUP $MAINPID
           Restart=on-failure
@@ -123,13 +129,40 @@
         state: started
         enabled: yes
       loop: "{{ user_ports }}"
+      register: start_results
+      ignore_errors: true
 
-    # Optional: allow ports in UFW if it's installed; ignore errors if not present
+    - name: Show failing units (if any)
+      debug:
+        msg: "Port {{ item.item.port }} failed to start: {{ item.msg | default('') }}"
+      when: item is failed
+      loop: "{{ start_results.results }}"
+
+    - name: Fetch journal for failing units
+      command: "journalctl -xeu sshd@{{ item.item.port }} --no-pager | tail -n 120"
+      when: item is failed
+      loop: "{{ start_results.results }}"
+      register: journals
+      changed_when: false
+
+    - name: Print journal snippets
+      debug:
+        var: journals.results | map(attribute='stdout') | list
+      when: journals is defined and (journals.results | length) > 0
+
+    - name: Fail if any sshd instances failed
+      assert:
+        that:
+          - (start_results.results | select('failed') | list | length) == 0
+        fail_msg: "One or more sshd@PORT instances failed to start. See logs above."
+        success_msg: "All sshd@PORT instances started successfully."
+
+    # Optional: allow ports in UFW if present; ignore if ufw absent
     - name: Allow ports in UFW if available
       command: "ufw allow {{ item.port }}/tcp"
       loop: "{{ user_ports }}"
       register: ufw_result
-      changed_when: "'Skipping' not in ufw_result.stdout"
+      changed_when: "'Skipping' not in (ufw_result.stdout | default(''))"
       failed_when: false
 
     - name: Show listening sshd sockets
@@ -140,8 +173,8 @@
     - debug:
         var: ss_out.stdout
 
-    # Disable default ssh only AFTER custom instances are up
-    - name: Stop & disable default sshd on 22 (done last to avoid disconnect)
+    # Stop default ssh only AFTER custom instances are up
+    - name: Stop & disable default sshd on 22
       systemd:
         name: ssh
         state: stopped
