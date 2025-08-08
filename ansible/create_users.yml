@@ -11,6 +11,12 @@
 
   tasks:
 
+    - name: 🔒 Stop and disable default SSH (port 22)
+      systemd:
+        name: ssh
+        enabled: no
+        state: stopped
+
     - name: Create users
       user:
         name: "{{ item.name }}"
@@ -74,7 +80,7 @@
         line: "PasswordAuthentication no"
       loop: "{{ user_ports }}"
 
-    - name: Start sshd for each custom port
+    - name: 🚀 Start sshd for each custom port
       shell: |
         /usr/sbin/sshd -f /etc/ssh/sshd_config_{{ item.port }}
       loop: "{{ user_ports }}"
