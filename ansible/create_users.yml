@@ -10,14 +10,13 @@
       - { name: "shubham", port: 2224 }
 
   tasks:
-
     - name: Stop default SSH on port 22
       systemd:
         name: ssh
         enabled: no
         state: stopped
 
-    - name: Create user accounts
+    - name: Create users
       user:
         name: "{{ item.name }}"
         shell: /bin/bash
@@ -34,7 +33,7 @@
         group: "{{ item.name }}"
       loop: "{{ user_ports }}"
 
-    - name: Add shared public key
+    - name: Add public key to authorized_keys
       copy:
         src: keys/shared.pub
         dest: "/home/{{ item.name }}/.ssh/authorized_keys"
@@ -44,7 +43,7 @@
         remote_src: no
       loop: "{{ user_ports }}"
 
-    - name: Create custom sshd_config for each user/port
+    - name: Create sshd_config for each port
       blockinfile:
         path: "/etc/ssh/sshd_config_{{ item.port }}"
         create: yes
@@ -65,7 +64,7 @@
           Subsystem sftp /usr/lib/openssh/sftp-server
       loop: "{{ user_ports }}"
 
-    - name: Start sshd on each port with custom config
+    - name: Start sshd process for each user/port
       shell: |
         /usr/sbin/sshd -f /etc/ssh/sshd_config_{{ item.port }}
       args:
