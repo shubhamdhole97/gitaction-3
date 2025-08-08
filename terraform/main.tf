@@ -41,7 +41,7 @@ resource "google_compute_firewall" "allow_custom_ssh" {
 }
 
 resource "google_compute_instance" "vm_instance" {
-  name         = "small-serverrrrr"
+  name         = "small-serv"
   machine_type = "e2-small"
   zone         = "us-central1-a"
   tags         = ["ssh-access"]  # tag used for firewall targeting

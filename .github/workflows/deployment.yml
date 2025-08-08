@@ -37,19 +37,25 @@ jobs:
       run: terraform init
 
     - name: 📊 Terraform Plan
-      run: terraform plan -var="ssh_user=${{ secrets.SSH_USER }}" -var="ssh_pub_key=${{ secrets.SSH_PUBLIC_KEY }}"
+      run: terraform plan \
+        -var="ssh_user=${{ secrets.SSH_USER }}" \
+        -var="ssh_pub_key=${{ secrets.SSH_PUBLIC_KEY }}"
 
     - name: 🚀 Terraform Apply
-      run: terraform apply -auto-approve -var="ssh_user=${{ secrets.SSH_USER }}" -var="ssh_pub_key=${{ secrets.SSH_PUBLIC_KEY }}"
+      run: terraform apply -auto-approve \
+        -var="ssh_user=${{ secrets.SSH_USER }}" \
+        -var="ssh_pub_key=${{ secrets.SSH_PUBLIC_KEY }}"
 
     - name: 🧾 Get Terraform Output (VM IP)
       id: tf_output
       run: |
         echo "VM_IP=$(terraform output -raw vm_ip)" >> $GITHUB_ENV
 
+    # Needed to access VM on all ports via Ansible
     - name: 🧪 Install Ansible
       run: |
-        sudo apt update && sudo apt install -y ansible
+        sudo apt update
+        sudo apt install -y ansible
 
     - name: 🧾 Write Shared Public Key from Secret
       run: |
@@ -58,8 +64,8 @@ jobs:
 
     - name: 📝 Update Inventory with VM IP
       run: |
-        echo "Creating dynamic inventory..."
-        sed "s/REPLACE_ME/${VM_IP}/" ../ansible/inventory.ini > ../ansible/inventory_dynamic.ini
+        echo "[servers]" > ../ansible/inventory_dynamic.ini
+        echo "server1 ansible_host=${{ env.VM_IP }} ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/id_rsa ansible_port=22" >> ../ansible/inventory_dynamic.ini
 
     - name: ▶️ Run Ansible Playbook
       run: |
