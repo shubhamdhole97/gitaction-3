@@ -1,67 +1,84 @@
 ---
-- name: Create users on GCP VM and configure SSH access with custom ports
+- name: Create users and setup per-port ssh access
   hosts: all
   become: true
-
   vars:
-    users_to_create:
-      - user1
-      - user2
-      - user3
-      - shubham
+    users_and_ports:
+      - { name: user1, port: 2221 }
+      - { name: user2, port: 2222 }
+      - { name: user3, port: 2223 }
+      - { name: shubham, port: 2224 }
 
   tasks:
-    - name: Ensure users exist
+    - name: Create users
       user:
-        name: "{{ item }}"
+        name: "{{ item.name }}"
         state: present
         shell: /bin/bash
         create_home: yes
-      loop: "{{ users_to_create }}"
+      loop: "{{ users_and_ports }}"
 
-    - name: Ensure .ssh directory exists
+    - name: Create .ssh directory
       file:
-        path: "/home/{{ item }}/.ssh"
+        path: "/home/{{ item.name }}/.ssh"
         state: directory
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
         mode: '0700'
-        owner: "{{ item }}"
-        group: "{{ item }}"
-      loop: "{{ users_to_create }}"
+      loop: "{{ users_and_ports }}"
 
-    - name: Add shared public key to authorized_keys
+    - name: Copy shared public key to authorized_keys
       copy:
         src: keys/shared.pub
-        dest: "/home/{{ item }}/.ssh/authorized_keys"
-        owner: "{{ item }}"
-        group: "{{ item }}"
+        dest: "/home/{{ item.name }}/.ssh/authorized_keys"
+        owner: "{{ item.name }}"
+        group: "{{ item.name }}"
         mode: '0600'
-        remote_src: no
-      loop: "{{ users_to_create }}"
+      loop: "{{ users_and_ports }}"
 
-    - name: Add custom SSH ports and Match User config
-      blockinfile:
-        path: /etc/ssh/sshd_config
-        block: |
-          Port 2221
-          Port 2222
-          Port 2223
-          Port 2224
+    - name: Create sshd config for each user
+      copy:
+        dest: "/etc/ssh/sshd_config_{{ item.port }}"
+        content: |
+          Port {{ item.port }}
+          Protocol 2
+          PermitRootLogin no
+          AllowUsers {{ item.name }}
+          PasswordAuthentication no
+          PubkeyAuthentication yes
+          AuthorizedKeysFile .ssh/authorized_keys
+          ChallengeResponseAuthentication no
+          UsePAM yes
+          AllowAgentForwarding yes
+          AllowTcpForwarding yes
+          X11Forwarding no
+          Subsystem sftp /usr/lib/openssh/sftp-server
+      loop: "{{ users_and_ports }}"
 
-          Match User user1
-            Port 2221
+    - name: Start additional sshd instances
+      systemd:
+        name: sshd@{{ item.port }}
+        enabled: yes
+        state: started
+        daemon_reload: yes
+      loop: "{{ users_and_ports }}"
 
-          Match User user2
-            Port 2222
+    - name: Create sshd@.service override (template)
+      copy:
+        dest: /etc/systemd/system/sshd@.service
+        content: |
+          [Unit]
+          Description=OpenSSH per-port server for %%i
+          After=network.target
 
-          Match User user3
-            Port 2223
+          [Service]
+          ExecStart=/usr/sbin/sshd -D -f /etc/ssh/sshd_config_%%i
+          Restart=on-failure
 
-          Match User shubham
-            Port 2224
-      notify: Restart SSH
+          [Install]
+          WantedBy=multi-user.target
+      notify: Reload systemd
 
   handlers:
-    - name: Restart SSH
-      service:
-        name: ssh
-        state: restarted
+    - name: Reload systemd
+      command: systemctl daemon-reexec
