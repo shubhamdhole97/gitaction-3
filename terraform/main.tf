@@ -16,32 +16,13 @@ terraform {
 }
 
 provider "google" {
-  project = "shubham-project-468314"
-  region  = "us-central1"
-  zone    = "us-central1-a"
-}
-
-resource "google_compute_firewall" "allow_custom_ssh" {
-  name    = "allow-custom-ssh"
-  network = "default"
-
-  allow {
-    protocol = "tcp"
-    ports    = ["22", "2221", "2222", "2223", "2224", "2225"]
-  }
-
-  direction     = "INGRESS"
-  source_ranges = ["0.0.0.0/0"]
-  target_tags   = ["ssh-access"]
-
-  # Prevent errors if the firewall already exists
-  lifecycle {
-    ignore_changes = all
-  }
+  project     = "shubham-project-468314"
+  region      = "us-central1"
+  zone        = "us-central1-a"
 }
 
 resource "google_compute_instance" "vm_instance" {
-  name         = "small-serv"
+  name         = "small-server"
   machine_type = "e2-small"
   zone         = "us-central1-a"
   tags         = ["ssh-access"]  # tag used for firewall targeting
@@ -53,7 +34,7 @@ resource "google_compute_instance" "vm_instance" {
   }
 
   network_interface {
-    network       = "default"
+    network = "default"
     access_config {}
   }
 
@@ -66,11 +47,24 @@ resource "google_compute_instance" "vm_instance" {
       for PORT in $PORTS; do
         grep -q "^Port $PORT" /etc/ssh/sshd_config || echo "Port $PORT" >> /etc/ssh/sshd_config
       done
-      systemctl restart ssh || systemctl restart sshd || service ssh restart
+      systemctl restart sshd
     EOF
   }
+}
 
-  depends_on = [google_compute_firewall.allow_custom_ssh]
+# ✅ Firewall rule to allow SSH on multiple ports
+resource "google_compute_firewall" "allow_custom_sshh" {
+  name    = "allow-custom-sshh"
+  network = "default"
+
+  allow {
+    protocol = "tcp"
+    ports    = ["22", "2221", "2222", "2223", "2224", "2225"]
+  }
+
+  direction     = "INGRESS"
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["ssh-access"]
 }
 
 output "vm_ip" {
